@@ -219,7 +219,7 @@ func UpdateCustomerAddress(c *fiber.Ctx) error {
 
 	payloadBytes, _ := json.Marshal(updatePayload)
 
-	endpoint := "/api/resource/Address/" + url.PathEscape(addressName)
+	endpoint := "/api/resource/Address/" + addressName
 	res, err := erpnext.ERPNextReq("PUT", endpoint, payloadBytes)
 	
 	if err != nil {
@@ -227,6 +227,7 @@ func UpdateCustomerAddress(c *fiber.Ctx) error {
 	}
 
 	if strings.Contains(string(res), "exc_type") {
+		fmt.Println(string(res))
 		return c.Status(400).JSON(fiber.Map{
 			"error": "Gagal memperbarui alamat. Pastikan ID alamat valid.",
 		})
@@ -238,25 +239,68 @@ func UpdateCustomerAddress(c *fiber.Ctx) error {
 }
 
 func DeleteCustomerAddress(c *fiber.Ctx) error {
-	addressName := c.Params("name")
-	if addressName == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "ID Alamat tidak boleh kosong"})
-	}
+    addressName := c.Params("name")
+    if addressName == "" {
+        return c.Status(400).JSON(fiber.Map{"error": "ID Alamat tidak boleh kosong"})
+    }
 
-	endpoint := "/api/resource/Address/" + url.PathEscape(addressName)
-	res, err := erpnext.ERPNextReq("DELETE", endpoint, nil)
-	
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Gagal menghubungi server ERPNext"})
-	}
+    userToken, ok := c.Locals("user").(*jwt.Token)
+    if !ok || userToken == nil {
+        return c.Status(401).JSON(fiber.Map{"error": "Akses ditolak"})
+    }
+    claims := userToken.Claims.(jwt.MapClaims)
+    customerID := fmt.Sprintf("%v", claims["customer_id"])
 
-	if strings.Contains(string(res), "exc_type") {
-		return c.Status(400).JSON(fiber.Map{
-			"error": "Alamat tidak bisa dihapus karena mungkin sedang terikat dengan pesanan aktif.",
-		})
-	}
+    checkEndpoint := "/api/resource/Address/" + addressName 
+    resCheck, errCheck := erpnext.ERPNextReq("GET", checkEndpoint, nil)
+    
+    if errCheck != nil {
+        return c.Status(500).JSON(fiber.Map{"error": "Gagal terhubung ke server ERPNext"})
+    }
 
-	return c.Status(200).JSON(fiber.Map{
-		"message": "Alamat berhasil dihapus",
-	})
+    if strings.Contains(string(resCheck), "exc_type") {
+        fmt.Println("[GET ADDRESS ERROR]:", string(resCheck)) 
+        return c.Status(404).JSON(fiber.Map{
+            "error": "Alamat tidak ditemukan di sistem untuk dicek kepemilikannya.",
+        })
+    }
+
+    var addressData struct {
+        Data struct {
+            Links []struct {
+                LinkDoctype string `json:"link_doctype"`
+                LinkName    string `json:"link_name"`
+            } `json:"links"`
+        } `json:"data"`
+    }
+
+    if err := json.Unmarshal(resCheck, &addressData); err != nil {
+        fmt.Println("[JSON UNMARSHAL ERROR]:", err)
+        return c.Status(500).JSON(fiber.Map{"error": "Gagal membaca struktur data alamat"})
+    }
+
+    isOwner := false
+    for _, link := range addressData.Data.Links {
+        if link.LinkDoctype == "Customer" && link.LinkName == customerID {
+            isOwner = true
+            break
+        }
+    }
+
+    if !isOwner {
+        return c.Status(403).JSON(fiber.Map{"error": "Anda tidak memiliki akses untuk menghapus alamat ini!"})
+    }
+
+    res, err := erpnext.ERPNextReq("DELETE", checkEndpoint, nil)
+    
+    if err != nil || strings.Contains(string(res), "exc_type") {
+        fmt.Println("[DELETE ADDRESS ERROR]:", string(res))
+        return c.Status(400).JSON(fiber.Map{
+            "error": "Alamat tidak bisa dihapus karena mungkin sedang terikat dengan pesanan aktif.",
+        })
+    }
+
+    return c.Status(200).JSON(fiber.Map{
+        "message": "Alamat berhasil dihapus",
+    })
 }
