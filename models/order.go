@@ -10,7 +10,7 @@ type CheckoutItem struct {
 
 type CheckoutRequest struct {
 	AddressName string         `json:"address_name"`
-	Items       []CheckoutItem `json:"items"`
+	SelectedItemIDs []string `json:"selected_item_ids"`
 }
 
 type SalesOrderResponse struct {

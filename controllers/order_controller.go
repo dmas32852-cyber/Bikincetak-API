@@ -7,6 +7,7 @@ import (
 	"bikincetak-api/models"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -18,36 +19,109 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+
 func CreateOrder(c *fiber.Ctx) error {
 	var req models.CheckoutRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Format request tidak valid"})
 	}
 
-	userToken, ok := c.Locals("user").(*jwt.Token)
-	if !ok || userToken == nil {
-		return c.Status(401).JSON(fiber.Map{"error": "Akses ditolak, token tidak valid."})
+	if req.AddressName == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Alamat pengiriman harus dipilih"})
 	}
-	claims, ok := userToken.Claims.(jwt.MapClaims)
-	if !ok {
-		return c.Status(401).JSON(fiber.Map{"error": "Gagal membaca token."})
+
+	if len(req.SelectedItemIDs) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "Pilih minimal satu barang untuk dicheckout"})
 	}
+
+	userToken := c.Locals("user").(*jwt.Token)
+	claims := userToken.Claims.(jwt.MapClaims)
 	customerEmail := fmt.Sprintf("%v", claims["email"])
 	customerID := fmt.Sprintf("%v", claims["customer_id"])
+
+	var wg sync.WaitGroup
+	var erpAddress models.ERPNextAddressResponse
+	var existingCart models.ERPNextCart
+	var customerName string
+	var errFetch error
+	var mu sync.Mutex 
+
+	wg.Add(3) 
+
+	go func() {
+		defer wg.Done()
+		resAddress, errAddr := erpnext.ERPNextReq("GET", "/api/resource/Address/"+url.PathEscape(req.AddressName), nil)
+		if errAddr != nil {
+			mu.Lock(); errFetch = errAddr; mu.Unlock()
+			return
+		}
+		json.Unmarshal(resAddress, &erpAddress)
+	}()
+
+	go func() {
+		defer wg.Done()
+		resCust, errCust := erpnext.ERPNextReq("GET", "/api/resource/Customer/"+url.PathEscape(customerID), nil)
+		if errCust != nil {
+			mu.Lock(); errFetch = errCust; mu.Unlock()
+			return
+		}
+		var custData map[string]interface{}
+		if err := json.Unmarshal(resCust, &custData); err == nil {
+			if data, ok := custData["data"].(map[string]interface{}); ok {
+				if name, ok := data["customer_name"].(string); ok {
+					customerName = name
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		cartEndpoint := "/api/resource/Cart/" + url.PathEscape(customerID)
+		resCart, errCart := erpnext.ERPNextReq("GET", cartEndpoint, nil)
+		if errCart != nil || strings.Contains(string(resCart), "exc_type") {
+			mu.Lock(); errFetch = fmt.Errorf("keranjang kosong"); mu.Unlock()
+			return
+		}
+		json.Unmarshal(resCart, &existingCart)
+	}()
+
+	wg.Wait()
+
+	if errFetch != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Gagal memproses pesanan. Pastikan keranjang dan alamat valid."})
+	}
+
+	if len(existingCart.Data.Items) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "Keranjang belanja Anda kosong"})
+	}
 
 	var grossAmount int64 = 0
 	var midtransItems []midtrans.ItemDetails
 	var erpItems []map[string]interface{}
 
-	for _, item := range req.Items {
+	for _, item := range existingCart.Data.Items {
+	
+		isItemPicked := false
+		for _, pickedID := range req.SelectedItemIDs {
+			if item.Name == pickedID {
+				isItemPicked = true
+				break
+			}
+		}
+
+		if !isItemPicked {
+			continue
+		}
+
 		baseQty := int32(item.Qty)
-		basePrice := int64(item.Rate)
+		basePrice := int64(item.Price)
 
 		grossAmount += basePrice * int64(baseQty)
 
 		midtransItems = append(midtransItems, midtrans.ItemDetails{
 			ID:    item.ItemCode,
-			Name:  item.ItemName,
+			Name:  item.VariantName, 
 			Price: basePrice,
 			Qty:   baseQty,
 		})
@@ -55,12 +129,17 @@ func CreateOrder(c *fiber.Ctx) error {
 		erpItems = append(erpItems, map[string]interface{}{
 			"item_code": item.ItemCode,
 			"qty":       item.Qty,
-			"rate":      item.Rate,
+			"rate":      item.Price,
 		})
 
-		for _, addon := range item.VariantLainnya {
+		var variants []models.CartVariantLainnya
+		if item.VariantLainnya != "" {
+			json.Unmarshal([]byte(item.VariantLainnya), &variants)
+		}
+
+		for _, addon := range variants {
 			addonPrice := int64(addon.Price)
-			addonQty := baseQty
+			addonQty := baseQty 
 
 			grossAmount += addonPrice * int64(addonQty)
 
@@ -73,51 +152,14 @@ func CreateOrder(c *fiber.Ctx) error {
 
 			erpItems = append(erpItems, map[string]interface{}{
 				"item_code": addon.ItemCode,
-				"qty":       float64(addonQty), 
+				"qty":       float64(addonQty),
 				"rate":      addon.Price,
 			})
 		}
 	}
 
-	var wg sync.WaitGroup
-	var erpAddress models.ERPNextAddressResponse
-	var customerName string
-	var errFetch error
-
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		resAddress, errAddr := erpnext.ERPNextReq("GET", "/api/resource/Address/"+req.AddressName, nil)
-		if errAddr != nil {
-			errFetch = errAddr
-			return
-		}
-		json.Unmarshal(resAddress, &erpAddress)
-	}()
-
-	go func() {
-		defer wg.Done()
-		resCust, errCust := erpnext.ERPNextReq("GET", "/api/resource/Customer/"+customerID, nil)
-		if errCust != nil {
-			errFetch = errCust
-			return
-		}
-
-		var custData map[string]interface{}
-		if err := json.Unmarshal(resCust, &custData); err == nil {
-			if data, ok := custData["data"].(map[string]interface{}); ok {
-				if name, ok := data["customer_name"].(string); ok {
-					customerName = name
-				}
-			}
-		}
-	}()
-
-	wg.Wait()
-
-	if errFetch != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Gagal mengambil data alamat/customer dari sistem"})
+	if len(erpItems) == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "Barang yang dipilih tidak ditemukan di keranjang"})
 	}
 
 	addr := erpAddress.Data
@@ -138,7 +180,6 @@ func CreateOrder(c *fiber.Ctx) error {
 	redisKey := "order_payload:" + tempOrderID
 
 	if errSet := database.Rdb.Set(database.Ctx, redisKey, soPayloadBytes, 24*time.Hour).Err(); errSet != nil {
-		fmt.Println("Error set Redis:", errSet)
 		return c.Status(500).JSON(fiber.Map{"error": "Gagal menyimpan sesi pesanan"})
 	}
 
@@ -151,35 +192,53 @@ func CreateOrder(c *fiber.Ctx) error {
 		CountryCode: "IDN",
 	}
 
-	shipAddress := &midtrans.CustomerAddress{
-		FName:       addr.AddressTitle,
-		Phone:       addr.Phone,
-		Address:     addr.AddressLine1,
-		City:        addr.City,
-		Postcode:    addr.Pincode,
-		CountryCode: "IDN",
-	}
-
 	snapReq := &snap.Request{
 		TransactionDetails: midtrans.TransactionDetails{
 			OrderID:  tempOrderID,
 			GrossAmt: grossAmount,
 		},
-		Items: &midtransItems,
+		Items:          &midtransItems,
 		CustomerDetail: &midtrans.CustomerDetails{
 			FName:    customerName,
 			Email:    customerEmail,
 			Phone:    addr.Phone,
 			BillAddr: billAddress,
-			ShipAddr: shipAddress,
+			ShipAddr: billAddress, 
 		},
 	}
 
 	snapResp, errMidtrans := config.SnapClient.CreateTransaction(snapReq)
 	if errMidtrans != nil {
-		fmt.Println("Error Midtrans:", errMidtrans.Error())
-		return c.Status(500).JSON(fiber.Map{"error": "Gagal memproses pembayaran ke gerbang pembayaran"})
+		return c.Status(500).JSON(fiber.Map{"error": "Gagal terhubung ke gateway pembayaran"})
 	}
+
+	go func() {
+		var remainingItems []models.ERPNextCartItem
+		
+		for _, item := range existingCart.Data.Items {
+			isPaid := false
+			for _, pickedID := range req.SelectedItemIDs {
+				if item.Name == pickedID {
+					isPaid = true
+					break
+				}
+			}
+			
+			if !isPaid {
+				remainingItems = append(remainingItems, item)
+			}
+		}
+
+		cartEndpoint := "/api/resource/Cart/" + url.PathEscape(customerID)
+		
+		if len(remainingItems) == 0 {
+			erpnext.ERPNextReq("DELETE", cartEndpoint, nil)
+		} else {
+			updatePayload := map[string]interface{}{"items": remainingItems}
+			updateBytes, _ := json.Marshal(updatePayload)
+			erpnext.ERPNextReq("PUT", cartEndpoint, updateBytes)
+		}
+	}()
 
 	return c.Status(200).JSON(fiber.Map{
 		"message":     "Pesanan berhasil dibuat",
