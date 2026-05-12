@@ -32,6 +32,26 @@ type CartItem struct {
 	VariantLainnya []CartVariantLainnya `gorm:"serializer:json" json:"variant_lainnya"`
 }
 
+type ERPNextCartItem struct {
+	Name           string  `json:"name,omitempty"` 
+	ItemCode       string  `json:"item_code"`
+	VariantName    string  `json:"variant_name"`
+	Qty            int     `json:"qty"`
+	Price          float64 `json:"price"`
+	ImageURL       string  `json:"image_url"`
+	UOM            string  `json:"uom"`
+	Notes          string  `json:"notes"`
+	VariantLainnya string  `json:"variant_lainnya"` 
+}
+
+type ERPNextCart struct {
+	Data struct {
+		Name     string            `json:"name"`
+		Customer string            `json:"customer"`
+		Items    []ERPNextCartItem `json:"items"`
+	} `json:"data"`
+}
+
 type AddToCartRequest struct {
 	ItemCode    string  `json:"item_code"`
 	VariantName string  `json:"variant_name"`
