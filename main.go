@@ -21,9 +21,12 @@ func main() {
 
 	app := fiber.New()
 
-
+	frontend_url := os.Getenv("FRONTEND_URL")
+	if frontend_url == "" {
+		frontend_url ="https://bikin-cetak.vercel.app"
+	}
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     os.Getenv("FRONTEND_URL"),
+		AllowOrigins:     frontend_url,
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, HEAD, PUT, DELETE, PATCH",
 		AllowCredentials: true,
