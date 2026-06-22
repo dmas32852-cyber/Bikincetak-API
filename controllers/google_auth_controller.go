@@ -15,10 +15,17 @@ import (
 )
 
 func getGoogleOAuthConfig() *oauth2.Config {
+	google_id := os.Getenv("GOOGLE_CLIENT_ID")
+	google_secret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	google_redirect := os.Getenv("GOOGLE_REDIRECT_URL")
+
+	if google_redirect == "" {
+		google_redirect = "https://bikin-cetak.vercel.app"
+	}
 	return &oauth2.Config{
-		ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
-		ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-		RedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+		ClientID:     google_id,
+		ClientSecret: google_secret,
+		RedirectURL:  google_redirect,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/userinfo.email",
 			"https://www.googleapis.com/auth/userinfo.profile",
@@ -66,7 +73,6 @@ func GoogleCallback(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Gagal membaca data dari Google"})
 	}
 
-
 	customerID, _, err := erpnext.GetCustomerAuthData(googleUser.Email)
 	if err != nil {
 
@@ -74,7 +80,7 @@ func GoogleCallback(c *fiber.Ctx) error {
 		if errERP != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "Gagal membuat customer di ERPNext via Google: " + errERP.Error()})
 		}
-		customerID = newCustomerID 
+		customerID = newCustomerID
 	}
 
 	claims := jwt.MapClaims{
@@ -91,13 +97,12 @@ func GoogleCallback(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Gagal menggenerate token"})
 	}
 
-
 	cookie := new(fiber.Cookie)
 	cookie.Name = "jwt"
 	cookie.Value = t
 	cookie.Expires = time.Now().Add(24 * time.Hour)
 	cookie.HTTPOnly = true
-	cookie.Secure = false 
+	cookie.Secure = true
 	cookie.SameSite = "Lax"
 
 	c.Cookie(cookie)
