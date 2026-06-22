@@ -104,7 +104,7 @@ func GoogleCallback(c *fiber.Ctx) error {
 
 	frontendURL := os.Getenv("FRONTEND_URL")
 	if frontendURL == "" {
-		frontendURL = "http://localhost:5173"
+		frontendURL = "https://bikin-cetak.vercel.app"
 	}
 
 	return c.Redirect(frontendURL, fiber.StatusFound)
