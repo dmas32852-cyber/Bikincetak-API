@@ -90,7 +90,7 @@ func Logout(c *fiber.Ctx) error {
 	cookie := new(fiber.Cookie)
 	cookie.Name = "jwt"
 	cookie.Value = ""
-	cookie.Expires = time.Now().Add(-time.Hour) // Set waktu mundur agar browser otomatis menghapusnya
+	cookie.Expires = time.Now().Add(-time.Hour) 
 	cookie.HTTPOnly = true
 
 	c.Cookie(cookie)
